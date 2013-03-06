@@ -1,0 +1,443 @@
+#include <stdlib.h>
+
+unsigned short global_counter;
+//char command[6];
+int target_dir;
+short ctrl_speed;
+short ctrl_mode;
+short ctrl_error;
+#define MODE_STOP 0
+#define MODE_GO 1
+
+#define MOTOR2_ENA 2
+#define MOTOR2_DIR 5
+#define MOTOR1_DIR 7
+#define MOTOR1_ENA 4
+#define MOTOR1_PWM 3
+#define MOTOR2_PWM 6
+
+
+void go() {
+        if (ctrl_mode == MODE_GO) {
+              int x,y;
+           
+              int diff = get_heading() - target_dir;
+           // diff = 0;
+                            if (diff > 180) {
+                      diff-=360;
+              }
+              if (diff < -180){
+                      diff+=360;
+              }
+              if (diff > 40 || diff< -40) {
+                      ctrl_mode = MODE_STOP;
+                      ctrl_error = 1;
+                      set_motor(0, 0, 0, 0);
+                      
+                      return;
+              }
+
+              
+              diff = diff;
+//              Serial.println(diff);  
+              x = ctrl_speed + diff;
+              y = ctrl_speed - diff;
+              if (x > 255) x = 255;
+              if (x < 0) x = 0;
+              if (y < 0) y = 0;
+              if (y > 255) y = 255;
+              analogWrite(MOTOR1_PWM, y);
+              analogWrite(MOTOR2_PWM, x);
+        }
+}
+
+
+void setup() {
+        Serial.begin(9600);
+        global_counter = 0;
+//        pinMode(9, OUTPUT);
+        pinMode(10, INPUT);
+        pinMode(11, OUTPUT);
+        pinMode(12, OUTPUT);
+        pinMode(13, OUTPUT);
+        pinMode(3, OUTPUT);
+        pinMode(2, OUTPUT);
+        pinMode(4, OUTPUT);
+        pinMode(5, OUTPUT);
+        pinMode(6, OUTPUT);
+        pinMode(7, OUTPUT);
+        set_motor(0, 0, 0, 0);        
+}
+
+
+int global_x, global_y;
+int last_tac;
+void handle_tac(void) {
+  int td;
+  int dx, dy;
+  float p;
+  td = digitalRead(10);
+  digitalWrite(13, td);
+  
+  if (!td && last_tac) {
+    p = get_headingf();
+    dx = sin(p) * 10.0;
+    dy = cos(p) * 10.0;
+    global_x +=dx;
+    global_y +=dy;
+  
+  }
+  last_tac =td;
+}
+
+int cmd_serial_state;
+int cmd_data[3];
+char cmd_serial;
+char cmd_command;
+
+
+#define SS_START 1
+#define SS_HASCMD 2
+#define SS_SKIPSPACE1 3
+
+#define SS_NEED1INT 4
+#define SS_NEED2INT 5
+#define SS_NEED3INT 6
+#define SS_NEEDCR 7
+
+typedef void (*command_handler)(char cmd, int arg1, int arg2, int arg3, char * output);
+
+struct cmd_info {
+  char ci_args;
+  command_handler ci_handler;
+};
+
+struct cmd_info cmd_info_table[255];
+
+
+void build_info_table(void) {
+  
+    cmd_info_table['T'].ci_args = 2;
+    cmd_info_table['T'].ci_handler = handler_T;
+    
+    cmd_info_table['a'].ci_args = 0;
+    cmd_info_table['a'].ci_handler = handler_a;
+    
+    cmd_info_table['l'].ci_args = 3;
+    cmd_info_table['l'].ci_handler = handler_l;
+    
+  
+}
+
+void set_default_output(char * o) {
+  o[0] = 'o';
+  o[1] = 'k';
+  o[2] = 0;
+}
+
+void handler_T(char cmd, int arg1, int arg2, int arg3, char * output) {
+     analogWrite(MOTOR1_PWM, arg1);
+     analogWrite(MOTOR2_PWM, arg2);
+     set_motor(0, 1, 0, 1);
+     set_default_output(output);
+     
+}
+
+void handler_a(char cmd, int arg1, int arg2, int arg3, char * output) {
+  set_default_output(output);
+}
+
+void handler_l(char cmd, int arg1, int arg2, int arg3, char * output) {
+    output[0] = 'o';
+    output[1] = 'k';
+    output[2] = ' ';
+    output[3] = arg1;
+    output[4] = arg2;
+    output[5] = arg3;
+    output[6] = 0;  
+}
+
+void render_output(int sn, char * data) {
+  
+  Serial.print(sn);
+  Serial.print(" ");
+  Serial.print(data);
+  Serial.print("\n");  
+}
+
+  
+void parse_input(char d) {
+  int argcount;
+  switch(cmd_serial_state) {
+    case SS_START:
+      cmd_serial_state = SS_HASCMD;
+      cmd_command = d;
+      cmd_data[0] = cmd_data[1] = cmd_data[2] = 0;
+      break;
+    case SS_HASCMD:
+      cmd_serial = d;
+      argcount = cmd_info_table[cmd_command].ci_args;
+      if (argcount > 0) {
+        cmd_serial_state = SS_NEED1INT - 1 + argcount;
+      } else {
+        cmd_serial_state = SS_NEEDCR;
+      }
+      break;
+    case SS_NEEDCR:
+      if (d=='\n') {
+        if (cmd_info_table[cmd_command].ci_handler) {
+          char outputbuffer[20];
+          cmd_info_table[cmd_command].ci_handler(cmd_command, cmd_data[0], cmd_data[1], cmd_data[2], outputbuffer);
+          render_output(cmd_serial, outputbuffer);
+        } else {
+          do_error();
+        }
+      } else {
+         do_error();
+      }   
+      cmd_serial_state = SS_START;
+      break;
+    
+    case SS_NEED1INT:
+      if (d >= '0' && d <= '9') {
+        updateint(d, cmd_data + 0);
+      } else if (d == ' ') {
+        cmd_serial_state = SS_NEEDCR;
+      }
+      break;
+      
+    case SS_NEED2INT:
+      if (d >= '0' && d <= '9') {
+        updateint(d, cmd_data + 1);
+      } else if (d == ' ') {
+        cmd_serial_state = SS_NEED1INT;
+      }
+      
+    case SS_NEED3INT:
+      if (d >= '0' && d <= '9') {
+        updateint(d, cmd_data + 2);
+      } else if (d == ' ') {
+        cmd_serial_state = SS_NEED2INT;
+      }
+      
+      
+    default:
+      do_error();
+      cmd_serial_state = SS_START;
+      
+  }
+    
+}
+  
+void do_error() {
+  Serial.println("Error");
+}
+
+void updateint(char d, int * x) {
+  *x = (*x) * 10 + d - '0';  
+  
+}
+
+
+void loop() {
+  handle_tac();
+//  go()
+  
+  while (Serial.available() > 0) {
+    char d = Serial.read();
+    parse_input(d);
+  }
+
+}
+
+  
+#if 0
+
+void loop() {
+  handle_tac();
+        go();
+        command[5] = 0;
+        global_counter --;
+        if (global_counter == 0) {
+                digitalWrite(12, LOW);
+               set_motor(0, 0, 0, 0);      
+                ctrl_mode = MODE_STOP;
+}
+        if (Serial.available()>=1) {
+                int i;
+                command[0] = command[1];
+                command[1] = command[2];
+                command[2] = command[3];
+                command[3] = command[4];
+                command[4] = Serial.read();
+               Serial.println(command[3]);
+        }
+        
+        if(command[4] == 10) {
+                global_counter = 10000;
+                parse_new_input(command);
+                command[4] = 0;
+                digitalWrite(12, HIGH);
+           //     digitalWrite(13, HIGH);
+            //   set_motor(0,0,0,0);
+        }
+}
+
+
+
+void parse_new_input(char * string) { 
+       int i;
+       char mode = string[0];
+       i = atoi(string+1);
+       switch (mode) {
+               case('g'):
+                       if(i==0) {
+                               set_motor(0, 0, 0, 0);
+                               
+                               analogWrite(MOTOR1_PWM, 0);
+                               analogWrite(MOTOR2_PWM, 0);
+                               
+                               ctrl_speed = 0;
+                               ctrl_mode = 0;
+                       } else {
+                               set_motor(0, 1, 0, 1);
+                               ctrl_speed = i;
+                               ctrl_mode = 1;
+                               target_dir = get_heading();
+                               global_counter=65000;
+                       }
+                       break;
+                
+               case ('X'):
+                       analogWrite(MOTOR1_PWM, i);
+                       analogWrite(MOTOR2_PWM, i);
+                       set_motor(1, 1, 0, 1);
+                       break;
+               case ('Y'):
+                       analogWrite(MOTOR1_PWM, i);
+                       analogWrite(MOTOR2_PWM, i);
+                       set_motor(0, 1, 1, 1);
+                       break;
+               case ('x'):
+                       analogWrite(MOTOR1_PWM, i);
+                       set_motor(0, 1, 0, 0);
+                       break;
+               case ('y'):
+                       analogWrite(MOTOR2_PWM, i);
+                  
+                        set_motor(0, 0, 0, 1);
+                       break;
+               case ('s'):
+                       digitalWrite(i, HIGH);
+                       break;
+                       
+               case('r'):
+                       digitalWrite(i, LOW);
+                       break;
+               case('a'):
+               {
+                       int ax, ay;
+                       ax= analogRead(A0);
+                       ay = analogRead(A1);
+                       Serial.println(ax);
+                       Serial.println(ay);
+                       break;
+               }
+
+                case ('l'):{
+                 int deg = get_heading();
+                 Serial.println(deg);
+                 Serial.println(global_x);
+                 Serial.println(global_y);
+                 global_x = global_y = 0;
+                 break;    
+                }
+               case('b'):
+                       sr_write(i);
+                       break;
+               
+               case('d'):
+                {
+                        int deg;
+                        deg = get_heading();
+                        Serial.println(deg);
+                        
+                 
+         }
+       }
+       
+       Serial.println("OK\n");
+//       Serial.println(i);
+}
+#endif
+float get_headingf() {
+          float ax, ay, deg;
+        ax = analogRead(A0) - 517;
+        ay = analogRead(A1) - 510;
+        deg = atan2(ax, ay);
+        return deg;
+}
+
+
+int get_heading(){
+        float ax, ay, deg;
+        ax = analogRead(A0) - 517;
+        ay = analogRead(A1) - 510;
+        deg = atan2(ax, ay) * 180.0/3.14159;
+        return deg;
+}
+         
+#define  SR_CLR 2
+#define  SR_DAT 7
+#define  SR_CLK 5
+#define SR_LOAD 4
+
+int gpo_data;
+void set_motor(int motor0_dir, int motor0_ena, int motor1_dir, int motor1_ena) {
+  gpo_data &= 0xf0;
+  
+ 
+//digitalWrite(2, !motor0_ena);
+//digitalWrite(4, motor0_dir);
+//digitalWrite(7, !motor1_ena);
+//digitalWrite(5, motor1_dir);
+//return;
+  if(motor0_dir) {
+    gpo_data |= 1;
+  }
+  if (motor1_dir) {
+    gpo_data |=4;
+  }
+  if (!motor0_ena) {
+    gpo_data |=2;
+  }
+  if (!motor1_ena) {
+    gpo_data |=8;
+  }
+  sr_write(gpo_data);
+  
+}
+
+
+
+int sr_write(int x) {
+    
+  int l;
+  //88888888888886
+  digitalWrite(SR_CLR, LOW);
+  digitalWrite(SR_CLK, LOW);
+  digitalWrite(SR_LOAD, LOW);
+  for (l=0; l < 8; l++) {
+        int b = !!((128>>l) & (x));
+        digitalWrite(SR_DAT, b);
+        digitalWrite(SR_CLK, HIGH);
+        digitalWrite(SR_CLK, LOW);
+  }
+  
+  digitalWrite(SR_LOAD, HIGH);
+ // digitalWrite(SR_LOAD, LOW);
+  digitalWrite(SR_CLK, HIGH);
+  
+}
+
+ 
